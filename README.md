@@ -17,7 +17,7 @@
    ```
 3. Then run:
    ```bash
-   python zefame.py
+   python main.py
    ```
    Select your service option and enter your link when prompted.  
 4. The program will passively send the orders — you can leave it open.
