@@ -1,338 +1,197 @@
-import sys
-import re
-import requests
-import urllib.parse
-from bs4 import BeautifulSoup
-from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QLineEdit, QPushButton,
-    QLabel, QScrollArea, QHBoxLayout, QFrame, QFileDialog
+import requests, sys, json, uuid, time, os, re, datetime
+from colorama import init, Fore, Style
+
+os.system('cls' if os.name=='nt' else 'clear')
+init(autoreset=True)
+
+order_logs = []
+
+ansi_escape = re.compile(r'\x1b\[[0-9;]*m')
+
+def visible_len(s):
+    return len(ansi_escape.sub('', s))
+
+def expand_period(text):
+    text = text.replace("min", "minutes")
+    text = text.replace("mins", "minutes")
+    text = text.replace("hr", "hour")
+    text = text.replace("hrs", "hours")
+    text = text.replace("h", "hours")
+
+    text = re.sub(r'(\d)(hour)', r'\1 hour', text)
+    text = re.sub(r'(\d)(hours)', r'\1 hours', text)
+    text = text.replace("1 hours", "1 hour")
+    return text
+
+preferred_order = [228, 229, 232, 236, 235, 999]
+
+names = {
+    229: "TikTok Views",
+    228: "TikTok Followers",
+    232: "TikTok Likes",
+    235: "TikTok Shares",
+    236: "TikTok Favorites"
+}
+
+if len(sys.argv) > 1:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+else:
+    data = requests.get("https://zefame-free.com/api_free.php?action=config").json()
+
+all_services = data.get('data', {}).get('tiktok', {}).get('services', [])
+
+logs_entry = {
+    "id": 999,
+    "name": "Logs",
+    "description": "",
+    "available": True
+}
+
+all_services.append(logs_entry)
+
+services = sorted(all_services, key=lambda s: preferred_order.index(s.get('id')) if s.get('id') in preferred_order else 999)
+
+lines = []
+lengths = []
+
+for i, service in enumerate(services, 1):
+    sid = service.get('id')
+
+    if sid == 999:
+        line = f"{Fore.CYAN}{i}.{Style.RESET_ALL} {Fore.GREEN}[WORKING]{Style.RESET_ALL} Logs"
+        lines.append(line)
+        lengths.append(visible_len(line))
+        continue
+
+    name = names.get(sid, service.get('name', '').strip())
+    raw_rate = service.get('description', '').strip()
+    rate = ""
+
+    if raw_rate:
+        r = raw_rate.replace("vues", "views").replace("partages", "shares").replace("favoris", "favorites")
+        parts = r.split(" ")
+        amount = parts[0]
+        srv = parts[1]
+        period = expand_period(" ".join(parts[3:]))
+        rate = f"{Fore.GREEN}{amount} {srv} every {period}{Style.RESET_ALL}"
+
+    status = f"{Fore.GREEN}[WORKING]{Style.RESET_ALL}" if service.get("available") else f"{Fore.RED}[DOWN]{Style.RESET_ALL}"
+
+    line = (
+        f"{Fore.CYAN}{i}.{Style.RESET_ALL} "
+        f"{status} "
+        f"{name:<35} │ {rate}"
+    )
+    lines.append(line)
+    lengths.append(visible_len(line))
+
+if lines:
+    max_len = max(lengths)
+    top = "┌" + "─" * (max_len + 2) + "┐"
+    bottom = "└" + "─" * (max_len + 2) + "┘"
+
+    print(f"{Fore.LIGHTWHITE_EX}Services powered by: ZeFame{Style.RESET_ALL}")
+    print(top)
+    for line, ln in zip(lines, lengths):
+        padding = " " * (max_len - ln)
+        print(f"│ {line}{padding} │")
+    print(bottom)
+
+print(f"\n{Fore.CYAN}Please select an option:{Style.RESET_ALL} ", end="")
+choice = input().strip()
+if not choice:
+    sys.exit()
+
+try:
+    idx = int(choice)
+    if idx < 1 or idx > len(services):
+        print("Out of range")
+        sys.exit()
+except:
+    print("Invalid")
+    sys.exit()
+
+selected = services[idx - 1]
+sid = selected.get("id")
+
+if sid == 999:
+    print("\nORDER HISTORY\n")
+    if not order_logs:
+        print("There are no logged records of orders yet.\n")
+        sys.exit()
+    for entry in order_logs:
+        print(entry)
+    print()
+    sys.exit()
+
+if sid == 228:
+    user_input = input("Enter profile URL: ")
+else:
+    user_input = input("Enter video URL: ")
+
+print()
+
+id_check = requests.post(
+    "https://zefame-free.com/api_free.php?",
+    data={"action": "checkVideoId", "link": user_input}
 )
-from PyQt6.QtGui import QPixmap, QImage, QClipboard
-from PyQt6.QtCore import Qt
 
-class Section(QFrame):
-    def __init__(self):
-        super().__init__()
-        self.setStyleSheet("""
-            QFrame {
-                background-color: #1b1b1b;
-                border-radius: 14px;
-                padding: 12px;
-                border: 1px solid #292929;
-            }
-        """)
-        self.layout = QVBoxLayout(self)
+video_id = id_check.json().get("data", {}).get("videoId")
+print(f"Parsed Video ID: {video_id}\n")
 
-class TikTokGUI(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("TikTok Account Lookup")
-        self.setGeometry(200, 200, 900, 550)
-        self.setStyleSheet(self.theme())
-
-        main_layout = QVBoxLayout(self)
-
-        top_row = QHBoxLayout()
-        self.input_box = QLineEdit()
-        self.input_box.setPlaceholderText("Enter TikTok username")
-        self.input_box.setFixedHeight(42)
-        self.input_box.setStyleSheet(self.input_style())
-
-        self.fetch_btn = QPushButton("Lookup")
-        self.fetch_btn.setFixedHeight(42)
-        self.fetch_btn.setFixedWidth(150)
-        self.fetch_btn.setStyleSheet(self.button_style())
-        self.fetch_btn.clicked.connect(self.fetch_user)
-
-        top_row.addWidget(self.input_box)
-        top_row.addWidget(self.fetch_btn)
-        main_layout.addLayout(top_row)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet(self.scroll_style())
-
-        container = QWidget()
-        scroll_layout = QVBoxLayout(container)
-
-        self.avatar_section = Section()
-        self.avatar_label = QLabel()
-        self.avatar_label.setFixedSize(150, 150)
-        self.avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.avatar_label.setStyleSheet("""
-            background-color: #000000;
-            border-radius: 12px;
-        """)
-        self.avatar_section.layout.addWidget(self.avatar_label)
-
-        self.download_btn = QPushButton("Download Profile Picture")
-        self.download_btn.setStyleSheet(self.small_button_style())
-        self.download_btn.clicked.connect(self.download_picture)
-        self.avatar_section.layout.addWidget(self.download_btn)
-
-        scroll_layout.addWidget(self.avatar_section)
-
-        self.account_section = Section()
-        self.account_section.layout.addWidget(QLabel("<b>ACCOUNT DETAILS</b>"))
-        self.account_label = QLabel("")
-        self.account_label.setWordWrap(True)
-        self.account_label.setStyleSheet("font-size: 15px;")
-        self.account_section.layout.addWidget(self.account_label)
-        scroll_layout.addWidget(self.account_section)
-
-        self.bio_section = Section()
-        self.bio_section.layout.addWidget(QLabel("<b>BIOGRAPHY</b>"))
-        self.bio_label = QLabel("")
-        self.bio_label.setWordWrap(True)
-        self.bio_section.layout.addWidget(self.bio_label)
-
-        self.copy_bio_btn = QPushButton("Copy Biography")
-        self.copy_bio_btn.setStyleSheet(self.small_button_style())
-        self.copy_bio_btn.clicked.connect(self.copy_bio)
-        self.bio_section.layout.addWidget(self.copy_bio_btn)
-
-        scroll_layout.addWidget(self.bio_section)
-
-        self.links_section = Section()
-        self.links_section.layout.addWidget(QLabel("<b>BIOGRAPHY LINKS</b>"))
-        self.links_label = QLabel("")
-        self.links_label.setWordWrap(True)
-        self.links_label.setOpenExternalLinks(True)
-        self.links_label.setStyleSheet(self.link_style())
-        self.links_section.layout.addWidget(self.links_label)
-        scroll_layout.addWidget(self.links_section)
-
-        self.profile_section = Section()
-        self.profile_section.layout.addWidget(QLabel("<b>TIKTOK PROFILE URL</b>"))
-        self.profile_label = QLabel("")
-        self.profile_label.setOpenExternalLinks(True)
-        self.profile_label.setStyleSheet(self.link_style())
-        self.profile_section.layout.addWidget(self.profile_label)
-        scroll_layout.addWidget(self.profile_section)
-
-        scroll_layout.addSpacing(20)
-        scroll.setWidget(container)
-        main_layout.addWidget(scroll)
-
-        self.current_profile_pic = None
-
-    def fetch_user(self):
-        username = self.input_box.text().strip()
-        if username.startswith("@"):
-            username = username[1:]
-
-        info = self.get_user_info(username)
-        if not info:
-            self.account_label.setText("There was an error retrieving profile information.")
-            return
-
-        def up(v):
-            s = str(v).lower()
-            return "True" if s == "true" else "False" if s == "false" else v
-
-        details = [
-            f"User ID: {info['user_id']}",
-            f"Unique ID: {info['unique_id']}",
-            f"Nickname: {info['nickname']}",
-            f"Verified: {up(info['verified'])}",
-            f"Private Account: {up(info['privateAccount'])}",
-            f"Region: {info['region']}",
-            f"Followers: {info['followers']}",
-            f"Following: {info['following']}",
-            f"Likes: {info['likes']}",
-            f"Videos: {info['videos']}",
-            f"Friend Count: {info['friendCount']}",
-            f"Dig Count: {info['diggCount']}",
-        ]
-
-        self.account_label.setText("<br>".join(details))
-        self.bio_label.setText(info.get("signature", ""))
-
-        purple = "#6d3de8"
-
-        links = info.get("social_links", [])
-        if links:
-            self.links_label.setText("<br>".join(
-                f'<a style="color:{purple}; text-decoration:none;" href="{l}">{l}</a>'
-                for l in links
-            ))
-        else:
-            self.links_label.setText("No social links found.")
-
-        profile_url = f"https://www.tiktok.com/@{info['unique_id']}"
-        self.profile_label.setText(
-            f'<a style="color:{purple}; text-decoration:none;" href="{profile_url}">{profile_url}</a>'
-        )
-
-        pic_url = info.get("profile_pic", "")
-        if pic_url.startswith("http"):
-            self.current_profile_pic = pic_url
-            img_data = requests.get(pic_url).content
-            image = QImage.fromData(img_data)
-
-            pix = QPixmap.fromImage(image).scaled(
-                150, 150,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-
-            self.avatar_label.setPixmap(pix)
-
-        else:
-            self.avatar_label.setText("No Image")
-
-    def download_picture(self):
-        if not self.current_profile_pic:
-            return
-        save_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Profile Picture", "profile.jpg", "Images (*.jpg *.png)"
-        )
-        if save_path:
-            img_data = requests.get(self.current_profile_pic).content
-            with open(save_path, "wb") as f:
-                f.write(img_data)
-
-    def copy_bio(self):
-        clipboard = QApplication.clipboard()
-        clipboard.setText(self.bio_label.text())
-
-    def get_user_info(self, identifier):
-        url = f"https://www.tiktok.com/@{identifier}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-
-        response = requests.get(url, headers=headers)
-        if response.status_code != 200:
-            return None
-
-        html = response.text
-
-        patterns = {
-            'user_id': r'"id":"(\d+)"',
-            'unique_id': r'"uniqueId":"(.*?)"',
-            'nickname': r'"nickname":"(.*?)"',
-            'followers': r'"followerCount":(\d+)',
-            'following': r'"followingCount":(\d+)',
-            'likes': r'"heartCount":(\d+)',
-            'videos': r'"videoCount":(\d+)',
-            'signature': r'"signature":"(.*?)"',
-            'verified': r'"verified":(true|false)',
-            'privateAccount': r'"privateAccount":(true|false)',
-            'region': r'"region":"(.*?)"',
-            'diggCount': r'"diggCount":(\d+)',
-            'friendCount': r'"friendCount":(\d+)',
-            'profile_pic': r'"avatarLarger":"(.*?)"'
+while True:
+    order = requests.post(
+        "https://zefame-free.com/api_free.php?action=order",
+        data={
+            "service": selected.get("id"),
+            "link": user_input,
+            "uuid": str(uuid.uuid4()),
+            "videoId": video_id
         }
+    )
 
-        info = {}
-        for key, pattern in patterns.items():
-            m = re.search(pattern, html)
-            info[key] = m.group(1).replace("\\u002F", "/") if m else "N/A"
+    result = order.json()
+    success = result.get("success", False)
 
-        info["signature"] = info["signature"].replace("\\n", "\n")
+    service_name = names.get(sid, "Unknown")
 
-        social_links = []
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        link_pats = [
-            r'scene=bio_url[^"]*?target=([^"&]+)',
-            r'"bioLink":{"link":"([^"]+)"'
-        ]
+    if success:
+        print(Fore.GREEN + "Order was sent successfully, please be patient" + Style.RESET_ALL)
+        order_logs.append(f"[{timestamp}] ({service_name}): Successful")
+    else:
+        print(Fore.RED + "Something went wrong, please try again" + Style.RESET_ALL)
+        order_logs.append(f"[{timestamp}] ({service_name}): Unsuccessful")
 
-        for pat in link_pats:
-            for match in re.findall(pat, html):
-                clean = urllib.parse.unquote(match).replace("\\u002F", "/")
-                if clean not in social_links:
-                    social_links.append(clean)
+    wait = result.get("data", {}).get("nextAvailable")
 
-        bio = info["signature"]
-        social_text = {
-            "Instagram": r'[iI][gG]:\s*@?([a-zA-Z0-9._]+)',
-            "Snapchat": r'[sS][cC]:\s*@?([a-zA-Z0-9._]+)',
-            "Twitter/X": r'[tT]witter|[xX]:\s*@?([a-zA-Z0-9._]+)'
-        }
+    if wait:
+        try:
+            wait = float(wait)
+            now = time.time()
 
-        for label, pattern in social_text.items():
-            m = re.search(pattern, bio)
-            if m:
-                social_links.append(f"{label}: @{m.group(1)}")
+            if wait > now:
+                total = wait - now
+                finish_time = datetime.datetime.fromtimestamp(wait).strftime("%H:%M:%S")
+                print("\nNext available in:")
 
-        info["social_links"] = social_links
-        return info
+                bar_length = 40
+                start = time.time()
 
-    def theme(self):
-        return """
-            QWidget { background-color: #121212; color: #f2f2f2; }
-        """
+                while time.time() < wait:
+                    elapsed = time.time() - start
+                    progress = min(elapsed / total, 1)
+                    filled = int(progress * bar_length)
+                    empty = bar_length - filled
 
-    def input_style(self):
-        return """
-            background-color: #1e1e1e;
-            border-radius: 14px;
-            padding: 10px;
-            border: 1px solid #333;
-            font-size: 15px;
-            color: white;
-        """
+                    bar = "█" * filled + "░" * empty
+                    remaining = int(wait - time.time())
 
-    def button_style(self):
-        return """
-            QPushButton {
-                background-color: #6d3de8;
-                border-radius: 14px;
-                font-size: 16px;
-                color: white;
-            }
-            QPushButton:hover { background-color: #8353ff; }
-        """
+                    print(f"\r[{bar}] {remaining} seconds left ({finish_time})", end="")
+                    time.sleep(0.1)
 
-    def small_button_style(self):
-        return """
-            QPushButton {
-                background-color: #6d3de8;
-                border-radius: 10px;
-                padding: 6px;
-                font-size: 14px;
-                color: white;
-            }
-            QPushButton:hover { background-color: #8353ff; }
-        """
-
-    def link_style(self):
-        return """
-            QLabel {
-                color: #6d3de8;
-                font-size: 15px;
-            }
-            QLabel:hover { color: #8353ff; }
-        """
-
-    def scroll_style(self):
-        return """
-            QScrollArea { border: none; }
-
-            QScrollBar:vertical {
-                background: #121212;
-                width: 14px;
-                margin: 3px;
-                border-radius: 7px;
-            }
-
-            QScrollBar::handle:vertical {
-                background: #6d3de8;
-                border-radius: 7px;
-                min-height: 40px;
-            }
-
-            QScrollBar::handle:vertical:hover {
-                background: #8353ff;
-            }
-
-            QScrollBar::add-line,
-            QScrollBar::sub-line {
-                height: 0px;
-            }
-        """
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = TikTokGUI()
-    window.show()
-    sys.exit(app.exec())
+                print("\n")
+        except:
+            pass
