@@ -1,7 +1,6 @@
 # TikTok Botter
 
 **Star Goals:**  
-⭐ **300 Stars** – Make it concurrent (all services at the same time)  
 ⭐ **350 Stars** – Add support for Instagram  
 ⭐ **400 Stars** – Add support for Twitter  
 ⭐ **500 Stars** – Add support for YouTube  
